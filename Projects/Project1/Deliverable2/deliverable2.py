@@ -6,13 +6,13 @@ from transformers import pipeline
 class URLValidator:
     """
     A production-ready URL validation class that evaluates the credibility of a webpage
-    using multiple factors: domain trust, content relevance, fact-checking, bias detection, and citations.
+    using multiple factors: domain trust, content relevance, fact-checking, bias detection, citations, and security.
     """
 
     def __init__(self):
-        # SerpAPI Key
-        # This api key is from SerpAPI website.
+        # API Keys
         self.serpapi_key = SERPAPI_KEY
+        self.google_safe_browsing_key = GOOGLE_SAFE_KEY
 
         # Load models once to avoid redundant API calls
         self.similarity_model = SentenceTransformer('sentence-transformers/all-mpnet-base-v2')
@@ -30,18 +30,18 @@ class URLValidator:
             return ""  # Fail gracefully by returning an empty string
 
     def get_domain_trust(self, url: str, content: str) -> int:
-        """ Computes the domain trust score based on available data sources. """
-        trust_scores = []
+            """ Computes the domain trust score based on available data sources. """
+            trust_scores = []
 
-        # Hugging Face Fake News Detector
-        if content:
-            try:
-                trust_scores.append(self.get_domain_trust_huggingface(content))
-            except:
-                pass
+            # Hugging Face Fake News Detector
+            if content:
+                try:
+                    trust_scores.append(self.get_domain_trust_huggingface(content))
+                except:
+                    pass
 
-        # Compute final score (average of available scores)
-        return int(sum(trust_scores) / len(trust_scores)) if trust_scores else 50
+            # Compute final score (average of available scores)
+            return int(sum(trust_scores) / len(trust_scores)) if trust_scores else 50
 
     def get_domain_trust_huggingface(self, content: str) -> int:
         """ Uses a Hugging Face fake news detection model to assess credibility. """
@@ -91,7 +91,7 @@ class URLValidator:
         stars = max(1, min(5, round(score / 20)))  # Normalize 100-scale to 5-star scale
         return stars, "⭐" * stars
 
-    def generate_explanation(self, domain_trust, similarity_score, fact_check_score, bias_score, citation_score, final_score) -> str:
+    def generate_explanation(self, domain_trust, similarity_score, fact_check_score, bias_score, citation_score, safe_browsing_score, final_score) -> str:
         """ Generates a human-readable explanation for the score. """
         reasons = []
         if domain_trust < 50:
@@ -114,9 +114,44 @@ class URLValidator:
             reasons.append("Few citations found for this content.")
         else:
             reasons.append("High level of citations found for this content.")
-
+        if safe_browsing_score < 50:
+            reasons.append("No malicious content detected.")
+        else:
+            reasons.append("Possible malicious content detected.")
 
         return " ".join(reasons) if reasons else "This source is highly credible and relevant."
+
+
+    def check_google_safe_browsing(self, url: str) -> int:
+        """
+        Uses Google Safe Browsing API to check if a URL is malicious.
+        Returns:
+            - 100 if safe
+            - 30 if flagged as potentially harmful
+            - 10 if confirmed malicious
+        """
+        api_url = f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={self.google_safe_browsing_key}"
+        payload = {
+            "client": {
+                "clientId": "your-app",
+                "clientVersion": "1.0"
+            },
+            "threatInfo": {
+                "threatTypes": ["MALWARE", "SOCIAL_ENGINEERING", "UNWANTED_SOFTWARE", "POTENTIALLY_HARMFUL_APPLICATION"],
+                "platformTypes": ["ANY_PLATFORM"],
+                "threatEntryTypes": ["URL"],
+                "threatEntries": [{"url": url}]
+            }
+        }
+
+        try:
+            response = requests.post(api_url, json=payload)
+            data = response.json()
+            if "matches" in data:
+                return 10  # Malicious URL detected
+            return 100  # Safe URL
+        except:
+            return 50  # Default score if API request fails
 
     def rate_url_validity(self, user_query: str, url: str) -> dict:
         """ Main function to evaluate the validity of a webpage. """
@@ -127,17 +162,19 @@ class URLValidator:
         fact_check_score = self.check_facts(content)
         bias_score = self.detect_bias(content)
         citation_score = self.check_google_scholar(url)
+        safe_browsing_score = self.check_google_safe_browsing(url)
 
         final_score = (
-            (0.3 * domain_trust) +
-            (0.3 * similarity_score) +
-            (0.2 * fact_check_score) +
-            (0.1 * bias_score) +
-            (0.1 * citation_score)
+            (0.30 * domain_trust) +
+            (0.30 * similarity_score) +
+            (0.20 * fact_check_score) +
+            (0.10 * bias_score) +
+            (0.10 * citation_score) +
+            (0.05 * safe_browsing_score)
         )
 
         stars, icon = self.get_star_rating(final_score)
-        explanation = self.generate_explanation(domain_trust, similarity_score, fact_check_score, bias_score, citation_score, final_score)
+        explanation = self.generate_explanation(domain_trust, similarity_score, fact_check_score, bias_score, citation_score, safe_browsing_score, final_score)
 
         return {
             "raw_score": {
@@ -146,6 +183,7 @@ class URLValidator:
                 "Fact-Check Score": fact_check_score,
                 "Bias Score": bias_score,
                 "Citation Score": citation_score,
+                "Safe Browsing Score": safe_browsing_score,
                 "Final Validity Score": final_score
             },
             "stars": {
